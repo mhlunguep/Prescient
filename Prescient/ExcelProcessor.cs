@@ -1,4 +1,5 @@
 ﻿using Microsoft.Data.SqlClient;
+using System.Data;
 using System.Globalization;
 using Excel = Microsoft.Office.Interop.Excel;
 
@@ -17,63 +18,28 @@ namespace Prescient
         {
             Excel.Application excelApp = new Excel.Application();
             Excel.Workbook workbook = excelApp.Workbooks.Open(filePath);
-            Excel.Worksheet worksheet = workbook.Sheets[1]; 
+            Excel.Worksheet worksheet = workbook.Sheets[1];
 
             // Get the used range of cells in the worksheet
             Excel.Range range = worksheet.UsedRange;
 
-            // Get the full path of the workbook
+            // Extract the full path of the workbook and the file name
             string fullPath = workbook.FullName;
-
-            // Extract the file name from the full path
             string fileName = System.IO.Path.GetFileName(fullPath);
+
             // Extract the date part from the file name
             string dateString = fileName.Substring(0, 8);
-
-            string FileDate = ""; 
+            DateTime fileDate;
 
             // Parse the date string into a DateTime object
-            DateTime fileDate;
-            if (DateTime.TryParseExact(dateString, "yyyyMMdd", null, System.Globalization.DateTimeStyles.None, out fileDate))
+            if (DateTime.TryParseExact(dateString, "yyyyMMdd", null, DateTimeStyles.None, out fileDate))
             {
-                // Format the date as "yyyy-MM-dd"
-                FileDate = fileDate.ToString("yyyy-MM-dd");
+                // Process data and perform bulk insertion
+                ProcessDataAndBulkInsert(range, fileDate);
             }
             else
             {
                 Console.WriteLine("Failed to parse the date from the file name.");
-            }
-        
-
-            // Connect to the SQL database
-            using (SqlConnection connection = new SqlConnection(_connectionString))
-            {
-                connection.Open();
-
-                for (int row = 6; row <= range.Rows.Count; row++) 
-                {
-                    // Extract data from Excel
-                    string contract = (string)(range.Cells[row, 1] as Excel.Range).Value2;
-                    double expiryDateValue = (double)(range.Cells[row, 3] as Excel.Range).Value2;
-                    DateTime expiryDate = DateTime.FromOADate(expiryDateValue);
-                    string classification = (string)(range.Cells[row, 4] as Excel.Range).Value2;
-                    float strike = (float)(range.Cells[row, 5] as Excel.Range).Value2;
-                    string callPut = (string)(range.Cells[row, 6] as Excel.Range).Value2;
-                    float mtmYield = (float)(range.Cells[row, 7] as Excel.Range).Value2;
-                    float markPrice = (float)(range.Cells[row, 8] as Excel.Range).Value2;
-                    float spotRate = (float)(range.Cells[row, 9] as Excel.Range).Value2;
-                    float previousMTM = (float)(range.Cells[row, 10] as Excel.Range).Value2;
-                    float previousPrice = (float)(range.Cells[row, 11] as Excel.Range).Value2;
-                    float premiumOnOption = (float)(range.Cells[row, 12] as Excel.Range).Value2;
-                    string volatility = (string)(range.Cells[row, 13] as Excel.Range).Value2;
-                    float delta = (float)(range.Cells[row, 14] as Excel.Range).Value2;
-                    float deltaValue = (float)(range.Cells[row, 15] as Excel.Range).Value2;
-                    float contractsTraded = (float)(range.Cells[row, 16] as Excel.Range).Value2;
-                    float openInterest = (float)(range.Cells[row, 17] as Excel.Range).Value2;
-
-                    // Insert contract details into the database
-                    InsertContractDetails(connection, fileDate, contract, expiryDate, classification, strike, callPut, mtmYield, markPrice, spotRate, previousMTM, previousPrice, premiumOnOption, volatility, delta, deltaValue, contractsTraded, openInterest);
-                }
             }
 
             // Close Excel objects
@@ -81,47 +47,147 @@ namespace Prescient
             excelApp.Quit();
         }
 
-        private void InsertContractDetails(SqlConnection connection, DateTime fileDate, string contract, DateTime expiryDate, string classification, float strike, string callPut, float mtmYield, float markPrice, float spotRate, float previousMTM, float previousPrice, float premiumOnOption, string volatility, float delta, float deltaValue, float contractsTraded, float openInterest)
+        private void ProcessDataAndBulkInsert(Excel.Range range, DateTime fileDate)
         {
-            string query = @"IF NOT EXISTS (SELECT 1 FROM DailyMTM WHERE Contract = @Contract AND ExpiryDate = @ExpiryDate AND FileDate = @FileDate)
-                    BEGIN
-                        INSERT INTO DailyMTM (Contract, ExpiryDate, Classification, Strike, CallPut, MTMYield, MarkPrice, SpotRate, PreviousMTM, PreviousPrice, PremiumOnOption, Volatility, Delta, DeltaValue, ContractsTraded, OpenInterest, FileDate) 
-                        VALUES (@Contract, @ExpiryDate, @Classification, @Strike, @CallPut, @MTMYield, @MarkPrice, @SpotRate, @PreviousMTM, @PreviousPrice, @PremiumOnOption, @Volatility, @Delta, @DeltaValue, @ContractsTraded, @OpenInterest, @FileDate)
-                    END";
+            // Create a DataTable to hold Excel data
+            DataTable dataTable = new DataTable();
+            dataTable.Columns.Add("FileDate", typeof(DateTime));
+            dataTable.Columns.Add("Contract", typeof(string));
+            dataTable.Columns.Add("ExpiryDate", typeof(DateTime));
+            dataTable.Columns.Add("Classification", typeof(string));
+            dataTable.Columns.Add("Strike", typeof(float));
+            dataTable.Columns.Add("CallPut", typeof(string));
+            dataTable.Columns.Add("MTMYield", typeof(float));
+            dataTable.Columns.Add("MarkPrice", typeof(float));
+            dataTable.Columns.Add("SpotRate", typeof(float));
+            dataTable.Columns.Add("PreviousMTM", typeof(float));
+            dataTable.Columns.Add("PreviousPrice", typeof(float));
+            dataTable.Columns.Add("PremiumOnOption", typeof(float));
+            dataTable.Columns.Add("Volatility", typeof(string));
+            dataTable.Columns.Add("Delta", typeof(float));
+            dataTable.Columns.Add("DeltaValue", typeof(float));
+            dataTable.Columns.Add("ContractsTraded", typeof(float));
+            dataTable.Columns.Add("OpenInterest", typeof(float));
 
-            using (SqlCommand command = new SqlCommand(query, connection))
+            // Populate DataTable with Excel data
+            for (int row = 6; row <= range.Rows.Count; row++)
             {
-                command.Parameters.AddWithValue("@FileDate", fileDate);
-                command.Parameters.AddWithValue("@Contract", contract);
-                command.Parameters.AddWithValue("@ExpiryDate", expiryDate);
-                command.Parameters.AddWithValue("@Classification", classification);
-                command.Parameters.AddWithValue("@Strike", strike);
+                DataRow dataRow = dataTable.NewRow();
+                dataRow["FileDate"] = fileDate;
 
-                // Check for null value of callPut
-                if (callPut != null)
+                // Check if the cell value for Contract is null or empty
+                object contractValue = (range.Cells[row, 1] as Excel.Range).Value2;
+                if (contractValue != null && !string.IsNullOrWhiteSpace(contractValue.ToString()))
                 {
-                    command.Parameters.AddWithValue("@CallPut", callPut);
+                    dataRow["Contract"] = (string)contractValue;
                 }
                 else
                 {
-                    // Handle null value, you can set it to DBNull.Value or a default value as per your requirement
-                    command.Parameters.AddWithValue("@CallPut", DBNull.Value); // or command.Parameters.AddWithValue("@CallPut", "DefaultValue");
+                    // Handle the case where the cell value for Contract is null or empty
+                    // You might set a default value or handle it based on your application logic
+                    dataRow["Contract"] = ""; // Or any other default value you choose
                 }
 
-                command.Parameters.AddWithValue("@MTMYield", mtmYield);
-                command.Parameters.AddWithValue("@MarkPrice", markPrice);
-                command.Parameters.AddWithValue("@SpotRate", spotRate);
-                command.Parameters.AddWithValue("@PreviousMTM", previousMTM);
-                command.Parameters.AddWithValue("@PreviousPrice", previousPrice);
-                command.Parameters.AddWithValue("@PremiumOnOption", premiumOnOption);
-                command.Parameters.AddWithValue("@Volatility", volatility);
-                command.Parameters.AddWithValue("@Delta", delta);
-                command.Parameters.AddWithValue("@DeltaValue", deltaValue);
-                command.Parameters.AddWithValue("@ContractsTraded", contractsTraded);
-                command.Parameters.AddWithValue("@OpenInterest", openInterest);
+                double? expiryDateValue = range.Cells[row, 3].Value2 as double?;
+                DateTime expiryDate;
 
-                command.ExecuteNonQuery();
+                // Check if the expiryDateValue is null or not
+                if (expiryDateValue != null)
+                {
+                    // Convert the double value to a DateTime object
+                    expiryDate = DateTime.FromOADate((double)expiryDateValue);
+                    // Assign the expiry date to the ExpiryDate column in the DataRow
+                    dataRow["ExpiryDate"] = expiryDate;
+                }
+                else
+                {
+                    // Handle the case where the cell value is null or empty
+                    // You might set a default value or handle it based on your application logic
+                    dataRow["ExpiryDate"] = DateTime.MinValue; // Or any other default value you choose
+                }
+                // Check if the cell value for Classification is null or empty
+                object classificationValue = (range.Cells[row, 4] as Excel.Range).Value2;
+                if (classificationValue != null && !string.IsNullOrWhiteSpace(classificationValue.ToString()))
+                {
+                    dataRow["Classification"] = (string)classificationValue;
+                }
+                else
+                {
+                    // Handle the case where the cell value for Classification is null or empty
+                    // You might set a default value or handle it based on your application logic
+                    dataRow["Classification"] = ""; // Or any other default value you choose
+                }
+                
+
+                dataRow["Strike"] = Convert.ToSingle(range.Cells[row, 5].Value2);
+                dataRow["CallPut"] = GetCallPutValue(range.Cells[row, 6].Value2); // Handle empty and null values
+                dataRow["MTMYield"] = Convert.ToSingle(range.Cells[row, 7].Value2);
+                dataRow["MarkPrice"] = Convert.ToSingle(range.Cells[row, 8].Value2);
+                dataRow["SpotRate"] = Convert.ToSingle(range.Cells[row, 9].Value2);
+                dataRow["PreviousMTM"] = Convert.ToSingle(range.Cells[row, 10].Value2);
+                dataRow["PreviousPrice"] = Convert.ToSingle(range.Cells[row, 11].Value2);
+                dataRow["PremiumOnOption"] = Convert.ToSingle(range.Cells[row, 12].Value2);
+                dataRow["Volatility"] = GetVolatilityValue(range.Cells[row, 13].Value2); // Handle 0.00 string
+                dataRow["Delta"] = Convert.ToSingle(range.Cells[row, 14].Value2);
+                dataRow["DeltaValue"] = Convert.ToSingle(range.Cells[row, 15].Value2);
+                dataRow["ContractsTraded"] = Convert.ToSingle(range.Cells[row, 16].Value2);
+                dataRow["OpenInterest"] = Convert.ToSingle(range.Cells[row, 17].Value2);
+
+
+                dataTable.Rows.Add(dataRow);
+            }
+
+            // Perform bulk insertion into SQL Server
+            using (SqlConnection connection = new SqlConnection(_connectionString))
+            {
+                connection.Open();
+
+                using (SqlBulkCopy bulkCopy = new SqlBulkCopy(connection))
+                {
+                    bulkCopy.DestinationTableName = "DailyMTM";
+
+                    // Map DataTable columns to SQL table columns
+                    foreach (DataColumn column in dataTable.Columns)
+                    {
+                        bulkCopy.ColumnMappings.Add(column.ColumnName, column.ColumnName);
+                    }
+
+                    // Write data to SQL Server
+                    bulkCopy.WriteToServer(dataTable);
+                }
             }
         }
+
+
+        // Helper method to handle empty and null values for string data types
+        private string GetCallPutValue(object value)
+        {
+            if (value != null && !string.IsNullOrWhiteSpace(value.ToString()))
+            {
+                return value.ToString().Trim();
+            }
+            else
+            {
+                return null; // Return null if the value is empty or null
+            }
+        }
+
+        // Helper method to handle 0.00 string for Volatility column
+        private float GetVolatilityValue(object value)
+        {
+            if (value != null && float.TryParse(value.ToString(), out float result))
+            {
+                return result;
+            }
+            else if (value != null && value.ToString().Trim() == "0.00")
+            {
+                return 0.00f;
+            }
+            else
+            {
+                return 0.00f; // Default value for non-convertible or null values
+            }
+        }
+
     }
 }
